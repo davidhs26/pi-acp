@@ -274,6 +274,14 @@ export class PiAcpSession {
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
 
+  // Provider-error advice held back until we know the error is FINAL.
+  // A `message_end` with stopReason "error" may be followed by
+  // `auto_retry_start` (pi self-heals, up to retry.maxRetries): surfacing
+  // "select another model" for a blip that recovers 2s later cries wolf
+  // (2026-08-21 feedback). The advice emits only at `agent_settled` with the
+  // error still standing; a retry or a later successful message clears it.
+  private pendingProviderErrorAdvice: string | null = null
+
   /** Whether a turn is currently in progress (read by the `_session/steering` extension method). */
   get hasPendingTurn(): boolean {
     return this.pendingTurn !== null
@@ -549,13 +557,11 @@ export class PiAcpSession {
           } else {
             advice = `${who} failed to answer. You can retry, or select another model.`
           }
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: {
-              type: 'text',
-              text: `⚠️ ${advice}\n\n(${detail})`
-            } satisfies ContentBlock
-          })
+          // Held back: pi may auto-retry this (see the field's comment).
+          this.pendingProviderErrorAdvice = `⚠️ ${advice}\n\n(${detail})`
+        } else if (msg?.role === 'assistant') {
+          // A later successful message supersedes an earlier error.
+          this.pendingProviderErrorAdvice = null
         }
         break
       }
@@ -824,6 +830,9 @@ export class PiAcpSession {
       }
 
       case 'auto_retry_start': {
+        // pi is self-healing the pending error — the retry note is enough;
+        // the held-back advice would cry wolf.
+        this.pendingProviderErrorAdvice = null
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: formatAutoRetryMessage(ev) } satisfies ContentBlock
@@ -880,6 +889,15 @@ export class PiAcpSession {
       }
 
       case 'agent_settled': {
+        // The turn is settling with a provider error still standing (no
+        // retry rescued it) — NOW the actionable advice is warranted.
+        if (this.pendingProviderErrorAdvice && !this.cancelRequested) {
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: this.pendingProviderErrorAdvice } satisfies ContentBlock
+          })
+        }
+        this.pendingProviderErrorAdvice = null
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
