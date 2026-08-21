@@ -523,6 +523,26 @@ export class PiAcpSession {
     const type = String((ev as any).type ?? '')
 
     switch (type) {
+      case 'message_end': {
+        // Final authoritative assistant message. A provider failure rides here
+        // (stopReason "error" + errorMessage) and previously vanished: the app
+        // saw a clean, EMPTY completed turn — "the chat interrupted itself"
+        // (2026-08-21, xai 403 out-of-credits). Surface it as visible text;
+        // `agent_settled` still resolves the ACP turn as usual.
+        const msg = (ev as any).message
+        if (msg?.role === 'assistant' && msg?.stopReason === 'error') {
+          const detail = String(msg?.errorMessage ?? 'unknown provider error')
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'text',
+              text: `⚠️ Model provider error: ${detail}`
+            } satisfies ContentBlock
+          })
+        }
+        break
+      }
+
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
