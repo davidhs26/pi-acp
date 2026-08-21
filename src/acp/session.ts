@@ -531,12 +531,29 @@ export class PiAcpSession {
         // `agent_settled` still resolves the ACP turn as usual.
         const msg = (ev as any).message
         if (msg?.role === 'assistant' && msg?.stopReason === 'error') {
-          const detail = String(msg?.errorMessage ?? 'unknown provider error')
+          const detail = String(msg?.errorMessage ?? 'unknown provider error').slice(0, 300)
+          const model = [msg?.provider, msg?.model].filter(Boolean).join('/')
+          const who = model || 'The model provider'
+          // Actionable first line by error class, raw detail below for
+          // debugging. Credit/quota checks run BEFORE generic status-code
+          // classes: the xai out-of-credits message is itself a 403.
+          let advice: string
+          if (/out of credits|credit|quota|billing|insufficient|payment|subscription/i.test(detail)) {
+            advice = `${who} has run out of credits or quota. Please select another model and resend your message.`
+          } else if (/rate limit|too many requests|\b429\b/i.test(detail)) {
+            advice = `${who} is rate-limited right now. Wait a moment and retry, or select another model.`
+          } else if (/capacity|overloaded|unavailable|\b503\b/i.test(detail)) {
+            advice = `${who} is overloaded right now. Retry in a moment, or select another model.`
+          } else if (/api key|unauthorized|\b401\b/i.test(detail)) {
+            advice = `${who} rejected the configured API key. Fix the credential, or select another model.`
+          } else {
+            advice = `${who} failed to answer. You can retry, or select another model.`
+          }
           this.emit({
             sessionUpdate: 'agent_message_chunk',
             content: {
               type: 'text',
-              text: `⚠️ Model provider error: ${detail}`
+              text: `⚠️ ${advice}\n\n(${detail})`
             } satisfies ContentBlock
           })
         }
